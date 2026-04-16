@@ -1,0 +1,105 @@
+import streamlit as st
+import pdfplumber
+import re
+from pypdf import PdfReader, PdfWriter
+
+# ----------------------------
+# CONFIG
+# ----------------------------
+DOOR_KEYWORDS = [
+    "overhead door", "coiling door", "roll-up door",
+    "sectional door", "bifold door",
+    "counter shutter", "rolling door"
+]
+
+SPEC_PATTERN = r"08[\s\-]?33[\s\-]?\d{2}"
+
+# ----------------------------
+# FUNCTIONS
+# ----------------------------
+def clean(text):
+    return re.sub(r"\s+", " ", text.lower())
+
+def scan_pdf(file):
+    door_pages = set()
+    spec_pages = set()
+    issues = []
+
+    with pdfplumber.open(file) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if not text:
+                continue
+
+            t = clean(text)
+
+            # specs
+            if re.search(SPEC_PATTERN, t):
+                spec_pages.add(i)
+
+            # doors
+            if any(k in t for k in DOOR_KEYWORDS):
+                door_pages.add(i)
+
+            # missing tag detection
+            if "opening" in t and "door" in t:
+                if not re.search(r"\b(od|d)-?\d+\b", t.upper()):
+                    issues.append(f"Page {i+1}: Possible untagged door opening")
+
+    return {
+        "door_pages": door_pages,
+        "spec_pages": spec_pages,
+        "issues": issues
+    }
+
+def build_packet(file, pages):
+    reader = PdfReader(file)
+    writer = PdfWriter()
+
+    for p in sorted(pages):
+        writer.add_page(reader.pages[p])
+
+    output = "print_packet.pdf"
+    with open(output, "wb") as f:
+        writer.write(f)
+
+    return output
+
+# ----------------------------
+# UI
+# ----------------------------
+st.set_page_config(page_title="Plan Review Tool", layout="wide")
+
+st.title("🏗️ Construction Door Plan Review Tool")
+
+uploaded_file = st.file_uploader("Upload Construction PDF", type=["pdf"])
+
+if uploaded_file:
+
+    st.success("PDF uploaded")
+
+    if st.button("Run Analysis"):
+
+        results = scan_pdf(uploaded_file)
+
+        st.subheader("📊 Results")
+
+        st.write("Door Pages:", [p+1 for p in results["door_pages"]])
+        st.write("Spec Pages:", [p+1 for p in results["spec_pages"]])
+
+        st.subheader("⚠️ QA Issues")
+        if results["issues"]:
+            for i in results["issues"]:
+                st.write("❌", i)
+        else:
+            st.write("No issues found")
+
+        all_pages = results["door_pages"].union(results["spec_pages"])
+        output_pdf = build_packet(uploaded_file, all_pages)
+
+        with open(output_pdf, "rb") as f:
+            st.download_button(
+                "⬇️ Download Print Packet",
+                f,
+                file_name="DOOR_PRINT_PACKET.pdf"
+            )
